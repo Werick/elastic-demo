@@ -14,20 +14,47 @@ var test = function(result, callback){
 }
 
 var searchData = function(query, callback){
-	var Results;
-	var queryObj = query;
+	var Results = [];
+	
+	var queryObj = getPatientsOnProphylaxis(2, '2007-01-01', '2007-12-31');;
 
 	client.search(queryObj).then(function (resp) {
-		var hits = resp.aggregations.patient_bucket.buckets;
-		Results = hits;
-		console.log('Results: ', hits.length);
-		getDisaggregation(Results, function(_feedBack){
-			callback(_feedBack);
+		var hits = resp.aggregations.patient_bucket.buckets;		
+		console.log('Results CTX: ', hits.length);
+		getDisaggregation(hits, 'OnCTX', function(_feedBack){
+			Results.push(_feedBack);			
 		});
 		
 	}, function (err) {
     console.trace(err.message);
-	});	 
+	});	
+
+	queryObj = getPregantPatients(2, '2007-01-01', '2007-12-31');
+
+	client.search(queryObj).then(function (resp) {
+		var hits = resp.aggregations.patient_bucket.buckets;		
+		console.log('Results Preg: ', hits.length);
+		getDisaggregation(hits, 'Pregnant', function(_feedBack){
+			Results.push(_feedBack);			
+		});
+		
+	}, function (err) {
+    console.trace(err.message);
+	});	
+
+	queryObj = getStartingART(2, '2007-01-01', '2007-12-31');
+
+	client.search(queryObj).then(function (resp) {
+		var hits = resp.aggregations.patient_bucket.buckets;		
+		console.log('Results ART Start: ', hits.length);
+		getDisaggregation(hits, 'StartingART', function(_feedBack){
+			Results.push(_feedBack);
+			callback(Results);
+		});
+		
+	}, function (err) {
+    console.trace(err.message);
+	});	
 }
 
 var getYears = function(dob, reportEndDate ) {
@@ -47,7 +74,7 @@ var getYears = function(dob, reportEndDate ) {
   
 }
 
-var getDisaggregation = function(result, callback)
+var getDisaggregation = function(result, indicatorName, callback)
 {
 	var childMale = 0;
 	var childFemale = 0;
@@ -88,7 +115,7 @@ var getDisaggregation = function(result, callback)
 
 
 	result = {
-		indicatorName:"ONCTX",
+		indicatorName:indicatorName,
 		ageCategory: {
 			"adult":{
 				male: adultMale,
@@ -121,7 +148,7 @@ var getTestSearch = function()
 	return queryObj;
 }
 
-var getPregantPatients = function(location_id, reportStartDate, reportEndDate) {
+var getPregantPatients = function(locationId, reportStartDate, reportEndDate) {
 	var queryObj = {
 		index: 'openmrs',
 		type: 'obs',
@@ -130,13 +157,13 @@ var getPregantPatients = function(location_id, reportStartDate, reportEndDate) {
 		        "bool": {
 		           "must": [
 		              {
-		                  "terms": {"location_id": [1,2]}
+		                  "terms": {"location_id": [locationId]}
 		              },
 		              {
 		                  "range": {
 		                     "obs_datetime": {
-		                        "from": "2007-01-01",
-		                        "to": "2007-12-31"
+		                        "from": reportStartDate,
+		                        "to": reportEndDate
 		                     }
 		                  }
 		              },
@@ -258,10 +285,10 @@ var getPregantPatients = function(location_id, reportStartDate, reportEndDate) {
 		        }
 		    },
 		   	"aggs":{
-		        "gender_bucket":{
+		        "patient_bucket":{
 		            "terms":{
 		                "field":"person_id",                
-		                "size":10
+		                "size":500000
 		            },
 		            "aggs":{
 		                "gender":{
@@ -286,7 +313,7 @@ var getPregantPatients = function(location_id, reportStartDate, reportEndDate) {
 }
 
 
-var getStartingART = function(location_id, reportStartDate, reportEndDate) {
+var getStartingART = function(locationId, reportStartDate, reportEndDate) {
 	var queryObj = {
 		index: 'openmrs',
 		type: 'obs',
@@ -296,13 +323,13 @@ var getStartingART = function(location_id, reportStartDate, reportEndDate) {
 				"bool": {
 					"must": [
 					{
-						"terms": {"location_id": [1,2]}
+						"terms": {"location_id": [locationId]}
 					},
 					{
 						"range": {
 							"obs_datetime": {
-								"from": "2007-01-01",
-								"to": "2007-12-31"
+								"from": reportStartDate,
+								"to": reportEndDate
                      		}
                   		}
               		},
@@ -349,7 +376,7 @@ var getStartingART = function(location_id, reportStartDate, reportEndDate) {
         		"patient_bucket":{
             		"terms":{
                 		"field":"person_id",                
-                		"size":50000
+                		"size":500000
             		},
             		"aggs":{
                 		"gender":{
@@ -374,7 +401,7 @@ var getStartingART = function(location_id, reportStartDate, reportEndDate) {
 }
 
 
-var getPatientsOnProphylaxis = function (location_id, reportStartDate, reportEndDate)
+var getPatientsOnProphylaxis = function (locationId, reportStartDate, reportEndDate)
 {
 	
 	var queryObj = {
@@ -386,13 +413,13 @@ var getPatientsOnProphylaxis = function (location_id, reportStartDate, reportEnd
     			"bool": {
     				"must": [
     				{
-    					"terms": {"location_id":[4]}
+    					"terms": {"location_id":[locationId]}
               		},
               		{
                   		"range": {
                       		"obs_datetime": {
-                          		"from": "2010-01-01",
-                          		"to": "2010-12-31"
+                          		"from": reportStartDate,
+                          		"to": reportEndDate
                       		}
                 		}
               		},
