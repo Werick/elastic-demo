@@ -1,6 +1,7 @@
 "use strict";
 
 var es = require('elasticsearch');
+var ejs = require('elastic.js');
 var _ = require('lodash');
 
 
@@ -9,6 +10,81 @@ var client = new es.Client({
     host : 'localhost:9200'
 });
 
+var index = 'openmrs',
+    type = 'obs_report';
+
+function _handlePeriodCondition(params, conditionsArray) {
+    var includeCondition = false;
+    var period = ejs.RangeQuery('obs_datetime');
+    
+    if(params.startDate) {
+        period = ejs.RangeQuery('obs_datetime').gte(params.startDate);
+        includeCondition = true;
+    }
+    
+    if(params.endDate) {
+        period = ejs.RangeQuery('obs_datetime').lte(params.endDate);
+        includeCondition = true;
+    }
+    
+    if(includeCondition) {
+        conditionsArray.push(period);
+    }
+}
+    
+function _handleAgeCondition(params, conditionsArray) {
+    var age = ejs.RangeQuery('birthdate');
+
+    var includeCondition = false;
+    
+    if(params.lowerAgeLimit) {
+        if(params.endDate) {
+            age =  ejs.RangeQuery('birthdate').lte(params.endDate + '||-' + params.lowerAgeLimit + 'y');
+        } else {
+            age =  ejs.RangeQuery('birthdate').lte('now-' + params.lowerAgeLimit + 'y');
+        }
+        includeCondition = true;
+    } 
+    
+    if(params.upperAgeLimit) {
+        if(params.endDate) {
+            age =  ejs.RangeQuery('birthdate').gte(params.endDate + '||-' + params.upperAgeLimit + 'y');
+        } else {
+            age =  ejs.RangeQuery('birthdate').gte('now-' + params.upperAgeLimit + 'y');
+        }
+        includeCondition = true;
+    }
+    
+    if(includeCondition) {
+        conditionsArray.push(age);
+    }
+}
+    
+function _handleLocationCondition(params, conditionsArray) {
+    if(params.location) {
+    	var locations = [];
+        var location = ejs.TermsQuery('location_id', []);
+        
+        if(typeof params.location === 'array') {
+            for(var loc in params.location) {
+                locations.push(loc);
+            }                
+
+        } else {
+            locations.push(params.location);
+        }
+        location = ejs.TermsQuery('location_id', locations);
+        conditionsArray.push(location);
+    }
+}
+   
+function _handleGenderCondition(params, conditionsArray) {
+    if(params.gender) {
+        var gender = ejs.TermQuery('gender', params.gender);
+        conditionsArray.push(gender);
+    }
+}
+   
 var test = function(result, callback){
 	console.log('THIS FUNCTION IS AWESOME');
 }
@@ -16,20 +92,21 @@ var test = function(result, callback){
 var searchData = function(query, callback){
 	var Results = [];
 	
-	var queryObj = getPatientsOnProphylaxis(2, '2007-01-01', '2007-12-31');;
+	var queryObj = getPatientsOnProphylaxis(4, '2007-01-01', '2007-12-31');;
 
 	client.search(queryObj).then(function (resp) {
 		var hits = resp.aggregations.patient_bucket.buckets;		
 		console.log('Results CTX: ', hits.length);
 		getDisaggregation(hits, 'OnCTX', function(_feedBack){
-			Results.push(_feedBack);			
+			Results.push(_feedBack);	
+			callback(Results);		
 		});
 		
 	}, function (err) {
     console.trace(err.message);
 	});	
 
-	queryObj = getPregantPatients(2, '2007-01-01', '2007-12-31');
+	queryObj = getPregantPatients(4, '2007-01-01', '2007-12-31');
 
 	client.search(queryObj).then(function (resp) {
 		var hits = resp.aggregations.patient_bucket.buckets;		
@@ -42,19 +119,20 @@ var searchData = function(query, callback){
     console.trace(err.message);
 	});	
 
-	queryObj = getStartingART(2, '2007-01-01', '2007-12-31');
+	queryObj = getStartingART(4, '2007-01-01', '2007-12-31');
 
 	client.search(queryObj).then(function (resp) {
 		var hits = resp.aggregations.patient_bucket.buckets;		
 		console.log('Results ART Start: ', hits.length);
 		getDisaggregation(hits, 'StartingART', function(_feedBack){
-			Results.push(_feedBack);
-			callback(Results);
+			Results.push(_feedBack);			
 		});
 		
 	}, function (err) {
     console.trace(err.message);
-	});	
+	});
+
+
 }
 
 var getYears = function(dob, reportEndDate ) {
@@ -131,182 +209,288 @@ var getDisaggregation = function(result, indicatorName, callback)
 
 	callback(result);
 }
+//test multi-search
 
-var getTestSearch = function()
+var getTestMultiSearch = function(callback){
+	var queries = [];
+	var queryObj1 = {
+		index: 'openmrs',
+  		type: 'obs_report'
+	};
+
+	//using  elasticjs to build query body
+	var _body = ejs.Request().filter(ejs.TermFilter('location_id', 1));
+	queryObj1.body = _body;
+
+	var queryObj2 = {
+		index: 'openmrs',
+  		type: 'obs_report'
+	};
+
+	//using  elasticjs to build query body
+	_body = ejs.Request().filter(ejs.TermFilter('location_id', 2));
+	queryObj2.body = _body;
+	var header = {index: 'openmrs', type: 'obs_report'}
+
+	queries.push(header);
+	queries.push(queryObj1.body);
+	queries.push(header);
+	queries.push(queryObj2.body);
+
+	client.msearch({
+		body: queries
+	}).then(function (resp) {
+		
+		var hits = resp;		
+		_.each(resp.responses, function(data){
+			console.log('Results multi-search: ', data.hits.hits.length);
+		});
+		
+		callback(hits)
+	}, function (err) {
+    console.trace(err.message);
+	});	
+
+}
+
+var multiSearchQuery = function(params, callback){
+
+	var queries = [];
+	var header = {index: 'openmrs', type: 'obs_report'};
+
+	var params = params || {};
+	params.index = index;
+	params.type = type;
+	params.location = 1
+    params.upperAgeLimit = 1;
+    params.aggsName = 'belowOne';	
+
+    console.log('Params before call++', params);
+	var belowOne = getEnrolledInCare(params);
+
+	params.upperAgeLimit = 14;
+	params.gender = 'M';
+    params.aggsName = 'below15Male';
+	var below15Male = getEnrolledInCare(params);
+
+	params.gender = 'F';
+    params.aggsName = 'below15Female';
+	var below15Female = getEnrolledInCare(params);
+
+	delete params['upperAgeLimit'];
+	params.lowerAgeLimit = 15;
+	params.gender = 'M';
+    params.aggsName = 'above15Male';
+	var above15Male = getEnrolledInCare(params);
+
+	params.gender = 'F';
+    params.aggsName = 'above15Female';
+	var above15Female = getEnrolledInCare(params);
+
+	//build queries array
+	queries.push(header);
+	queries.push(belowOne.body);
+	queries.push(header);
+	queries.push(below15Male.body);
+	queries.push(header);
+	queries.push(below15Female.body);
+	queries.push(header);
+	queries.push(above15Male.body);
+	queries.push(header);
+	queries.push(above15Female.body);
+
+
+	client.msearch({
+		body: queries
+	}).then(function (resp) {
+		
+		var hits = resp;	
+		var belowOneCount = 0, below15FemaleCount =0, below15MaleCount = 0, 
+			above15FemaleCount =0, above15MaleCount = 0, totalCount = 0;	
+		_.each(resp.responses, function(data){
+			console.log('iteration data ', data);
+		
+			if(data.aggregations.hasOwnProperty('belowOne')) {
+				belowOneCount = data.aggregations.belowOne.buckets.length;
+			} else if(data.aggregations.hasOwnProperty('below15Female')) {
+				below15FemaleCount = data.aggregations.below15Female.buckets.length;
+			} else if(data.aggregations.hasOwnProperty('below15Male')) {
+				below15MaleCount = data.aggregations.below15Male.buckets.length;
+			} else if(data.aggregations.hasOwnProperty('above15Female')) {
+				above15FemaleCount = data.aggregations.above15Female.buckets.length;
+			} else if(data.aggregations.hasOwnProperty('above15Male')) {
+				above15MaleCount = data.aggregations.above15Male.buckets.length;
+			}
+			
+		});
+
+		totalCount = below15MaleCount + below15FemaleCount + above15MaleCount + above15FemaleCount;
+
+		var result = {
+		indicatorName:'Testing EnrolledInCareMOH',
+		ageCategory: {
+			'belowOne':belowOneCount,
+			'adult':{
+				male: above15MaleCount,
+				female: above15FemaleCount
+			},
+			'child':{
+				male:below15MaleCount,
+				female:below15FemaleCount
+			}
+		},
+		total:totalCount
+		};
+		console.log('Results multi-search: ', result);
+		
+		callback(result)
+	}, function (err) {
+    console.trace(err.message);
+	});	
+
+}
+
+var getTestSearch = function(callback)
 {
 	var queryObj = {
 		index: 'openmrs',
-  		type: 'obs',
-  		body: {
-  			filter: {
-  				term: {
-  					location_id: 1
-      			}
-    		}
-  		}
+  		type: 'obs_report'
+  		// ,
+  		// body: {
+  		// 	filter: {
+  		// 		term: {
+  		// 			location_id: 1
+    //   			}
+    // 		}
+  		// }
 	};
-	return queryObj;
+
+	//using  elasticjs to build query body
+	var _body = ejs.Request().filter(ejs.TermFilter('location_id', 1));
+	queryObj.body = _body;
+
+	console.log('QUery Object: ', JSON.stringify(queryObj));
+	// return queryObj;
+	client.search(queryObj).then(function (resp) {
+		var hits = resp.hits.hits;		
+		console.log('Results Preg: ', hits.length);
+		callback(hits)
+	}, function (err) {
+    console.trace(err.message);
+	});	
 }
 
-var getPregantPatients = function(locationId, reportStartDate, reportEndDate) {
+var getEnrolledInCare = function(params){
+	var conditions = [];
+	if(!_.isEmpty(params)) {     
+        _handleAgeCondition(params, conditions);
+        _handleLocationCondition(params, conditions);
+        _handlePeriodCondition(params, conditions);
+        _handleGenderCondition(params, conditions);
+        
+     }
+
+    console.log('Params +++', params);
+	var queryObj = {
+		index: params['index'] || index,
+		type: params['type'] || type
+	};
+
+	// basic mult-select query conditions
+	var encounterType = ejs.TermsQuery('encounter_type', [1, 2, 3, 4]),
+    	location = ejs.TermsQuery('location_id', [4]),
+      	obsDatetime = ejs.RangeQuery('obs_datetime').from("2007-01-01").to("2007-12-31");
+	
+      	//create query
+	var _body = ejs.Request()
+		.size(0)
+		.query(
+			ejs.BoolQuery()
+			.must(encounterType)
+			.must(conditions)
+		)
+		.agg(
+			ejs.TermsAggregation(params.aggsName)
+			.field('person_id')
+			.size(100000)
+			)
+
+	queryObj.body = _body;
+
+
+	console.log('QUery Object test: ', JSON.stringify(queryObj));
+	return queryObj;	
+}
+
+var getPregantPatients = function(params) {
+	// basic mult-select query conditions
+	var conditions = [];
+	if(!_.isEmpty(params)) {     
+        _handleAgeCondition(params, conditions);
+        _handleLocationCondition(params, conditions);
+        _handlePeriodCondition(params, conditions);
+        _handleGenderCondition(params, conditions);
+        
+     }
+		var _body = ejs.Request()
+		.size(0)
+		.query(
+			ejs.BoolQuery()
+			.must(conditions)
+			.must(
+				ejs.BoolQuery()
+				.should(
+					ejs.BoolQuery()
+					.must(ejs.TermQuery('concept_id', 1856))
+					.must(ejs.BoolQuery()
+						.must_not(ejs.TermQuery('value_coded', 1175))
+					)
+				)
+				.should(ejs.TermsQuery('concept_id', [1279,5992,1855]))
+				.should(
+					ejs.BoolQuery()
+					.must(ejs.TermsQuery('concept_id', [45, 5272]))
+					.must(ejs.TermsQuery('value_coded', [703, 1065]))
+				)
+				.should(
+					ejs.BoolQuery()
+					.must(ejs.TermsQuery('concept_id', [1790, 6042]))
+					.must(ejs.TermsQuery('value_coded', [44, 47, 46]))
+				)
+				.should(
+					ejs.BoolQuery()
+					.must(ejs.TermsQuery('concept_id', [1834, 1835]))
+					.must(ejs.TermsQuery('value_coded', [1831]))
+				)
+				.should(ejs.TermsQuery('concept_id', 1854))
+				.should(
+					ejs.BoolQuery()
+					.must(ejs.TermsQuery('concept_id', [1181, 1251]))
+					.must(ejs.TermsQuery('value_coded', [1148, 1776]))
+				)
+				.should(
+					ejs.BoolQuery()
+					.must(ejs.TermsQuery('concept_id', [1992]))
+					.must(ejs.TermsQuery('value_coded', [1066, 1067]))
+				)
+				.should(
+					ejs.BoolQuery()
+					.must(ejs.TermsQuery('concept_id', [2055]))
+					.must(ejs.TermsQuery('value_coded', [1065]))
+				)
+			)
+		)
+		.agg(
+			ejs.TermsAggregation(params.aggsName)
+			.field('person_id')
+			.size(100000)
+			)
+
 	var queryObj = {
 		index: 'openmrs',
-		type: 'obs',
-		body: {
-		    "query": {
-		        "bool": {
-		           "must": [
-		              {
-		                  "terms": {"location_id": [locationId]}
-		              },
-		              {
-		                  "range": {
-		                     "obs_datetime": {
-		                        "from": reportStartDate,
-		                        "to": reportEndDate
-		                     }
-		                  }
-		              },
-		              {
-		                  "bool": {
-		                      "should": [
-		                        {
-		                            "bool": {
-		                                 "must": [
-		                                    {
-		                                        "term": {"concept_id":1856}
-		                                    },
-		                                    {
-		                                        "bool": {
-		                                            "must_not": [
-		                                               {
-		                                                   "term": {"value_coded":1175}
-		                                               }
-		                                            ]
-		                                        }
-		                                    }
-		                                 ]
-		                            }
-		                        },
-		                        {
-		                            "terms": {"concept_id": [1279,5992,1855]}
-		                        },
-		                        {
-		                            "bool": {
-		                                "must": [
-		                                   {
-		                                       "terms": {"concept_id": [45,5272]}
-		                                   },
-		                                   {
-		                                       "terms": {"value_coded": [703,1065]}
-		                                   }
-		                                ]
-		                            }
-		                        },
-		                        {
-		                            "bool": {
-		                                "must": [
-		                                   {
-		                                       "terms": {"concept_id": [1790,6042]}
-		                                   },
-		                                   {
-		                                       "terms": {"value_coded": [44,47,46]}
-		                                   }
-		                                ]
-		                            }
-		                        },
-		                        {
-		                            "bool": {
-		                                "must": [
-		                                   {
-		                                       "terms": {"concept_id": [1834,1835]}
-		                                   },
-		                                   {
-		                                       "terms": {"value_coded": [1831]}
-		                                   }
-		                                ]
-		                            }
-		                        },
-		                        {
-		                            "terms": {"concept_id": [1854]}
-		                        },
-		                        {
-		                            "bool": {
-		                                "must": [
-		                                   {
-		                                       "terms": {"concept_id": [1181,1251]}
-		                                   },
-		                                   {
-		                                       "terms": {"value_coded": [1148,1776]}
-		                                   }
-		                                ]
-		                            }
-		                        },
-		                        {
-		                            "bool": {
-		                                "must": [
-		                                   {
-		                                       "terms": {"concept_id": [1992]}
-		                                   },
-		                                   {
-		                                       "terms": {"value_coded": [1066,1067]}
-		                                   }
-		                                ]
-		                            }
-		                        },
-		                        {
-		                            "bool": {
-		                                "must": [
-		                                   {
-		                                       "terms": {"concept_id": [2055]}
-		                                   },
-		                                   {
-		                                       "terms": {"value_coded": [1065]}
-		                                   }
-		                                ]
-		                            }
-		                        },
-		                        {
-		                            "filtered": {
-		                               "query": {
-		                               "terms": {"concept_id": [5596]}
-		                               },
-		                               "filter": {
-		                                   "script": {
-		                                      "script": "doc['obs_datetime'].value > doc['obs_datetime'].value"
-		                                   }
-		                               }
-		                            }                            
-		                        }
-		                      ]
-		                  }
-		              }
-		           ]
-		        }
-		    },
-		   	"aggs":{
-		        "patient_bucket":{
-		            "terms":{
-		                "field":"person_id",                
-		                "size":500000
-		            },
-		            "aggs":{
-		                "gender":{
-		                    "terms":{
-		                        "field":"gender"
-		                    },
-		                     "aggs":{
-		                        "dob":{
-		                            "terms":{
-		                                "field":"birthdate"
-		                            }
-		                        }
-		                    }
-		                }
-		            }
-		        }
-		    }
-		}
+		type: 'obs_report',
+		body:_body
+		
 	}
 
 	return queryObj;
@@ -316,7 +500,7 @@ var getPregantPatients = function(locationId, reportStartDate, reportEndDate) {
 var getStartingART = function(locationId, reportStartDate, reportEndDate) {
 	var queryObj = {
 		index: 'openmrs',
-		type: 'obs',
+		type: 'obs_report',
 		body: {
 			size:10,
 			"query": {
@@ -406,7 +590,7 @@ var getPatientsOnProphylaxis = function (locationId, reportStartDate, reportEndD
 	
 	var queryObj = {
 		index: 'openmrs',
-		type: 'obs',
+		type: 'obs_report',
 		body: {
 			"size": 10, 
     		"query": {
@@ -498,17 +682,30 @@ var getPatientsOnProphylaxis = function (locationId, reportStartDate, reportEndD
 
 //Testing some simple stuff
 //Test DAO
+var testPhoto = function(){
+	console.log('Test photo')
+}
 module.exports = function() {
 	test();
 	
 	return {
 
 		testElastic: function testElastic(request, callback) {
-			var testQuery = getPatientsOnProphylaxis(4, "2007-01-01","2007-12-31")
-			searchData(testQuery,function(resp){
-				callback(resp);
+			// var testQuery = getPatientsOnProphylaxis(4, "2007-01-01","2007-12-31")
+			// searchData(testQuery,function(resp){
+			// 	callback(resp);
+			// });
+			// getTestSearch(function(data){
+			// 	callback(data);
+			// });
+			// getEnrolledInCare();
+
+			// getTestMultiSearch(function(data){
+			// 	callback(data);
+			// });
+			multiSearchQuery({}, function(data){
+				callback(data);
 			});
-			
 		},
 		getEncounterById: function getEncounterById(request, callback) {
 
